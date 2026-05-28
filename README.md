@@ -96,7 +96,7 @@ Each row is one item conforming to `DatasetItem` in `big_finance_harness/types.p
 
 The publicly-released $50$-item subset is bundled in `data/big_finance_subset.jsonl`,
 licensed CC BY 4.0, and mirrored on Hugging Face at
-[`bigfinancebench/big-finance`](https://huggingface.co/datasets/bigfinancebench/big-finance).
+[`RogoAI/big-finance-benchmark`](https://huggingface.co/datasets/RogoAI/big-finance-benchmark).
 See [`data/README.md`](data/README.md) for schema and provenance, and
 [`data/DATASHEET.md`](data/DATASHEET.md) for the full datasheet. The held-back
 remainder of the benchmark is available on request through the maintainer; place
