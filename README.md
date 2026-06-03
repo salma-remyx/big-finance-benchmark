@@ -9,7 +9,8 @@ Reference scaffold for evaluating LLM agents on the **Big Finance** benchmark â€
 workflow-grounded financial-research questions, each paired with an expert-authored
 rubric and a reference answer.
 
-This harness reproduces the headline numbers from the companion Big Finance paper.
+This harness reproduces the headline numbers from the companion paper,
+[BigFinanceBench: A Workflow-Grounded Benchmark for Financial-Research Agents](https://arxiv.org/abs/2606.03829).
 It is deliberately minimal: a ReAct loop, four publicly-replicable tools, and a
 unified message format that runs the same scaffold across any model accessible
 through [LiteLLM](https://github.com/BerriAI/litellm).
@@ -199,9 +200,19 @@ training data.
 
 ## Citation
 
-Citation forthcoming â€” companion paper in preparation. In the meantime, please
-reference this repository directly via the "Cite this repository" link on
-GitHub (powered by [`CITATION.cff`](CITATION.cff)).
+If you use this benchmark or harness, please cite the paper
+([arXiv:2606.03829](https://arxiv.org/abs/2606.03829)):
+
+```bibtex
+@misc{bigfinancebench2026,
+  title         = {BigFinanceBench: A Workflow-Grounded Benchmark for Financial-Research Agents},
+  author        = {Wang, Alex and Meinhardt, Georg and Katz, Jacob and Kim, Joseph H. and Chaudhary, Pratyush K. and Blagden, Chase and Xu, Eric},
+  year          = {2026},
+  eprint        = {2606.03829},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.AI}
+}
+```
 
 ## License
 
