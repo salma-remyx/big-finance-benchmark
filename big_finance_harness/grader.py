@@ -27,6 +27,10 @@ import os
 
 import litellm
 
+from big_finance_harness.adaptive_rubric import (
+    elaborate_rubric,
+    format_elaborated_rubric,
+)
 from big_finance_harness.models.base import (
     _to_litellm_model,
     _vertex_location_for,
@@ -124,7 +128,7 @@ def _format_rubric_for_judge(rubric: list[RubricLine]) -> str:
 def _judge_user_prompt(
     question: str,
     reference_answer: str,
-    rubric: list[RubricLine],
+    rubric_block: str,
     final_answer: str | None,
     trace: str,
 ) -> str:
@@ -136,7 +140,7 @@ REFERENCE ANSWER:
 {reference_answer}
 
 RUBRIC (one line per analyst step; numbered):
-{_format_rubric_for_judge(rubric)}
+{rubric_block}
 
 AGENT'S FINAL ANSWER:
 {final_answer or "[no final answer was produced]"}
@@ -190,6 +194,7 @@ async def grade(
     judge_model_id: str,
     max_output_tokens: int = 16384,
     judge_alias: str | None = None,
+    adaptive_rubric: bool = False,
 ) -> GradedRun:
     """Grade a run with the given judge.
 
@@ -204,10 +209,19 @@ async def grade(
     judge_model = _to_litellm_model(provider, snapshot)
 
     trace = _format_trace(run.steps)
+    if adaptive_rubric:
+        # SedarEval self-adaptive rubric: restructure the expert rubric into per-line
+        # primary/secondary criteria + deduction points before the judge sees it. The
+        # expert rubric and point weights are unchanged — only the judge's view is
+        # elaborated. See `big_finance_harness/adaptive_rubric.py`.
+        elaborated = await elaborate_rubric(item=item, judge_model_id=judge_model_id)
+        rubric_block = format_elaborated_rubric(item.rubric, elaborated)
+    else:
+        rubric_block = _format_rubric_for_judge(item.rubric)
     user_prompt = _judge_user_prompt(
         question=item.query,
         reference_answer=item.reference_answer,
-        rubric=item.rubric,
+        rubric_block=rubric_block,
         final_answer=run.final_answer,
         trace=trace,
     )
