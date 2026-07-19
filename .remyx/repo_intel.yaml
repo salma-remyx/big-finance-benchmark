@@ -1,0 +1,18 @@
+schema_version: 1
+fork: salma-remyx/big-finance-benchmark
+observed_landing_zones:
+- path: big_finance_harness/
+  shape_tags:
+  - library-shape-public-api
+  confirmed_by:
+  - arxiv: 2501.15595v1
+    mode: Mode 2 (adapted port)
+    call_site_specifics: "big_finance_harness/grader.py: grade() \u2014 the new code\
+      \ runs only inside the `if adaptive_rubric:` branch (grader.py:212). No pre-existing\
+      \ entry point sets that flag: the production pipeline scripts/run"
+    branch: sedareval-automated-evaluation-using-self-adaptive-rubrics
+    timestamp: '2026-07-19T15:01:53Z'
+  last_observed: '2026-07-19T15:01:53Z'
+rejected_shapes: []
+coordination_signals: []
+last_updated: '2026-07-19T15:01:53Z'
