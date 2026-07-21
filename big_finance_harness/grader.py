@@ -39,6 +39,7 @@ from big_finance_harness.types import (
     RubricLine,
     RunRecord,
     StepRecord,
+    VerifierScores,
 )
 
 JUDGE_SYSTEM = """\
@@ -190,12 +191,24 @@ async def grade(
     judge_model_id: str,
     max_output_tokens: int = 16384,
     judge_alias: str | None = None,
+    continuous_score: bool = False,
+    verifier_model_id: str | None = None,
+    verifier_top_logprobs: int = 20,
+    verifier_scoring_tokens: dict[str, float] | None = None,
+    verifier_num_samples: int = 1,
 ) -> GradedRun:
     """Grade a run with the given judge.
 
     `judge_alias`: if provided, the stored `GradedRun.judge` field uses this string
     instead of `judge_model_id`. Useful when substituting a same-family model and
     wanting downstream analysis to treat the grades as a single judge bucket.
+
+    `continuous_score`: when True, additionally run the LLM-as-a-Verifier logprob
+    pass (`big_finance_harness.logprob_verifier`) after the boolean grade, scoring
+    final-answer correctness and every rubric line as continuous calibrated values
+    in [0, 1]. The boolean grading result is unchanged; the continuous scores are
+    attached as `GradedRun.verifier_scores`. `verifier_model_id` defaults to the
+    boolean judge's model.
     """
     if run.question_id != item.id:
         raise ValueError(f"run/item id mismatch: run={run.question_id} item={item.id}")
@@ -299,6 +312,24 @@ async def grade(
             points_earned += line.points
             lines_earned += 1
 
+    verifier_scores: VerifierScores | None = None
+    if continuous_score:
+        # LLM-as-a-Verifier pass: continuous calibrated scores from scoring-token
+        # logprobs (criteria decomposition + score granularity), run after the
+        # boolean grade so the headline 0/1 verdict is unaffected. See
+        # `big_finance_harness.logprob_verifier` for the method and attribution.
+        from big_finance_harness.logprob_verifier import verify_criteria
+
+        verifier_scores = await verify_criteria(
+            judge_model_id=verifier_model_id or judge_model_id,
+            item=item,
+            run=run,
+            trace=trace,
+            scoring_tokens=verifier_scoring_tokens,
+            top_logprobs=verifier_top_logprobs,
+            num_samples=verifier_num_samples,
+        )
+
     return GradedRun(
         question_id=item.id,
         trial_idx=run.trial_idx,
@@ -315,4 +346,5 @@ async def grade(
         judge_prompt_tokens=judge_prompt_tokens,
         judge_completion_tokens=judge_completion_tokens,
         judge_cost_usd=judge_cost_usd,
+        verifier_scores=verifier_scores,
     )

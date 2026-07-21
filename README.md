@@ -218,3 +218,16 @@ If you use this benchmark or harness, please cite the paper
 
 Apache 2.0. See [`LICENSE`](LICENSE). The bundled 50-item dataset subset under
 `data/` is licensed separately under CC BY 4.0; see [`data/LICENSE-DATA`](data/LICENSE-DATA).
+
+## Continuous-score verifier (optional grading mode)
+
+The default judge emits a boolean per rubric line and for final-answer correctness.
+`grade(..., continuous_score=True)` adds an optional second pass — an
+LLM-as-a-Verifier style logprob verifier (`big_finance_harness.logprob_verifier`)
+— that scores each criterion as a continuous, calibrated value in `[0, 1]` by
+taking the expectation over the scoring-token logprob distribution. It supports a
+graded scoring-token scale (score granularity), per-criterion scoring (criteria
+decomposition), and `num_samples > 1` for variance-reduced repeated evaluation.
+The boolean grading result is unchanged; the continuous scores are attached as
+`GradedRun.verifier_scores`. The pass is off by default and shares the judge's
+concurrency budget. Adapted from the LLM-as-a-Verifier method.

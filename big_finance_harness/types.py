@@ -152,6 +152,37 @@ class GradedRubricLine(BaseModel):
     judge_explanation: str | None = None
 
 
+class VerifierCriterionScore(BaseModel):
+    """One criterion's continuous calibrated score from the logprob verifier.
+
+    The boolean judge returns 0/1 per criterion; the LLM-as-a-Verifier pass instead
+    computes E[score] over the scoring-token logprob distribution, yielding a
+    continuous value in [0, 1]. `score` is None when no emitted token matched the
+    scoring vocabulary.
+    """
+
+    label: str  # "final_answer" or "rubric:<i+1>"
+    score: float | None = None
+    num_samples: int = 1  # successful samples that yielded a matched token
+    variance: float | None = None  # across repeated samples (None unless num_samples > 1)
+    matched_tokens: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class VerifierScores(BaseModel):
+    """Continuous calibrated verification scores for one graded run.
+
+    `final_answer` is the headline continuous verdict; `rubric_lines` give
+    per-criterion scores (criteria decomposition). See
+    `big_finance_harness.logprob_verifier` for the method.
+    """
+
+    judge_model: str
+    scoring_tokens: dict[str, float]
+    top_logprobs: int
+    final_answer: VerifierCriterionScore
+    rubric_lines: list[VerifierCriterionScore]
+
+
 class GradedRun(BaseModel):
     question_id: str
     trial_idx: int = 0  # Matches the trace's trial_idx for multi-seed runs.
@@ -170,3 +201,6 @@ class GradedRun(BaseModel):
     judge_prompt_tokens: int = 0
     judge_completion_tokens: int = 0
     judge_cost_usd: float | None = None
+    # Optional continuous calibrated scores from the LLM-as-a-Verifier logprob pass.
+    # None unless `grade(..., continuous_score=True)` was set.
+    verifier_scores: VerifierScores | None = None
