@@ -12,7 +12,14 @@ observed_landing_zones:
       \ entry point sets that flag: the production pipeline scripts/run"
     branch: sedareval-automated-evaluation-using-self-adaptive-rubrics
     timestamp: '2026-07-19T15:01:53Z'
-  last_observed: '2026-07-19T15:01:53Z'
+  - arxiv: 2607.05391v1
+    mode: Mode 2 (adapted port)
+    call_site_specifics: big_finance_harness.grader.grade (opt-in via continuous_score=True);
+      grade() is itself the existing grading entry point invoked by the pipeline script
+      scripts/run_eval_set.py
+    branch: llm-as-a-verifier-a-general-purpose-verification-framework
+    timestamp: '2026-07-21T23:19:09Z'
+  last_observed: '2026-07-21T23:19:09Z'
 rejected_shapes:
 - shape_tag: null
   reason_code: null
@@ -21,4 +28,4 @@ rejected_shapes:
   - arxiv: 2607.08332v1
     timestamp: '2026-07-20T09:00:50Z'
 coordination_signals: []
-last_updated: '2026-07-20T09:00:50Z'
+last_updated: '2026-07-21T23:19:09Z'
