@@ -14,6 +14,8 @@ from bs4 import BeautifulSoup
 from rank_bm25 import BM25Okapi
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from big_finance_harness.models.base import ModelClient
+from big_finance_harness.semantic_chunker import semantic_chunk
 from big_finance_harness.tools.base import Tool, ToolError
 
 DEFAULT_TIMEOUT_S = 30.0
@@ -198,12 +200,19 @@ class FetchUrlTool(Tool):
         retrieve_k: int = DEFAULT_RETRIEVE_K,
         retrieve_chunk_tokens: int = DEFAULT_RETRIEVE_CHUNK_TOKENS,
         sec_user_agent: str | None = None,
+        model_client: ModelClient | None = None,
+        semantic_chunking: bool = False,
     ) -> None:
         self.timeout_s = timeout_s
         self.default_max_tokens = max_tokens
         self.retrieve_k = retrieve_k
         self.retrieve_chunk_tokens = retrieve_chunk_tokens
         self.sec_user_agent = sec_user_agent or os.environ.get("SEC_EDGAR_USER_AGENT")
+        # When both are set, the query path segments the document with an LLM
+        # (LumberChunker-style variable-size chunks) instead of fixed paragraph
+        # windows. Opt-in: unset by default so existing runs are unchanged.
+        self.model_client = model_client
+        self.semantic_chunking = semantic_chunking
 
     @retry(
         stop=stop_after_attempt(3),
@@ -260,7 +269,10 @@ class FetchUrlTool(Tool):
             body = resp.text
 
         if query:
-            chunks = _split_paragraphs(body, self.retrieve_chunk_tokens)
+            if self.model_client is not None and self.semantic_chunking:
+                chunks = await semantic_chunk(body, self.model_client)
+            else:
+                chunks = _split_paragraphs(body, self.retrieve_chunk_tokens)
             top = _bm25_top_k(chunks, query, self.retrieve_k)
             if not top:
                 return f"[no content extracted from {url}]"

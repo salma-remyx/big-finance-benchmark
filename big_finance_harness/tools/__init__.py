@@ -6,6 +6,7 @@ order, and changing it can change sampling. Treat the order as part of the
 reproducibility contract.
 """
 
+from big_finance_harness.models.base import ModelClient
 from big_finance_harness.tools.base import Tool, ToolError
 from big_finance_harness.tools.edgar_search import EdgarSearchTool
 from big_finance_harness.tools.fetch_url import FetchUrlTool
@@ -14,11 +15,15 @@ from big_finance_harness.tools.python_exec import PythonExecTool
 from big_finance_harness.tools.web_search import WebSearchTool
 
 
-def default_tools() -> list[Tool]:
+def default_tools(
+    client: ModelClient | None = None,
+    *,
+    semantic_chunking: bool = False,
+) -> list[Tool]:
     return [
         WebSearchTool(),
         EdgarSearchTool(),
-        FetchUrlTool(),
+        FetchUrlTool(model_client=client, semantic_chunking=semantic_chunking),
         PythonExecTool(),
         FinalAnswerTool(),
     ]
