@@ -2,10 +2,12 @@
 
 The fetch_url tool's query path chunks a document then BM25-ranks the chunks.
 These tests exercise the opt-in wiring that swaps the fixed paragraph chunker
-for the LLM-driven `semantic_chunk` segmenter, plus a few self-tests of the
-segmenter itself. The integration test goes through the public FetchUrlTool
-surface (a non-new module) so it proves the call-site edit actually invokes the
-new code.
+for the LLM-driven `semantic_chunk` segmenter, plus self-tests of the segmenter
+itself. The mocked model answers with the *sentence* where the second chunk
+should start (the paper's prompt formulation), and the tests assert the splits
+land at exactly those mock-specified sentences. The integration test goes
+through the public FetchUrlTool surface (a non-new module) so it proves the
+call-site edit actually invokes the segmenter.
 """
 
 from __future__ import annotations
@@ -20,12 +22,12 @@ from big_finance_harness.types import Message, ModelResponse, ToolSpec
 
 
 class _ScriptedClient(ModelClient):
-    """Stub model that always returns a canned integer and counts its calls."""
+    """Stub model returning canned split-point sentences, in order."""
 
     snapshot = "anthropic:claude-test-2026-01-01"
 
-    def __init__(self, answer: str = "2") -> None:
-        self._answer = answer
+    def __init__(self, answers: list[str]) -> None:
+        self._answers = list(answers)
         self.calls = 0
 
     async def chat(
@@ -38,8 +40,9 @@ class _ScriptedClient(ModelClient):
         max_output_tokens: int = 65536,
     ) -> ModelResponse:
         self.calls += 1
+        answer = self._answers.pop(0) if self._answers else ""
         return ModelResponse(
-            text=self._answer,
+            text=answer,
             tool_calls=[],
             stop_reason="end_turn",
             prompt_tokens=0,
@@ -65,67 +68,119 @@ SAMPLE_HTML = """\
 
 
 @pytest.mark.asyncio
-async def test_semantic_chunk_merges_same_topic_passages():
-    # Six passages (one sentence each); the model always says the first two
-    # share the first passage's topic, so they merge pairwise into 3 chunks.
-    text = "Topic A one. Topic A two. Topic A three. Topic B one. Topic B two. Topic B three."
-    client = _ScriptedClient(answer="2")
-    chunks = await semantic_chunk(text, client, sentences_per_passage=1, group_size=6)
+async def test_semantic_chunk_splits_at_mock_named_sentences():
+    # Two-word sentences; target_words=3 triggers a query after two sentences.
+    # The model names "Alpha two." then "Beta one." as split points, so each
+    # chunk boundary must land exactly at the mock-specified sentence.
+    text = "Alpha one. Alpha two. Beta one. Beta two."
+    client = _ScriptedClient(["Alpha two.", "Beta one."])
+    chunks = await semantic_chunk(text, client, target_words=3)
 
-    assert client.calls > 0
-    assert len(chunks) == 3
-    # Each chunk merges exactly two passages (count=2); passage boundaries survive
-    # as substrings regardless of the join character used between them.
-    assert "Topic A one." in chunks[0]
-    assert "Topic A two." in chunks[0]
-    assert "Topic A one." not in chunks[1]
-    assert "Topic B two." in chunks[2]
+    assert client.calls == 2
+    assert chunks == ["Alpha one.", "Alpha two.", "Beta one. Beta two."]
 
 
 @pytest.mark.asyncio
-async def test_semantic_chunk_unparseable_answer_defaults_to_single_passage():
-    # A garbage answer must never merge unrelated passages: each becomes its own chunk.
-    client = _ScriptedClient(answer="huh??")
-    chunks = await semantic_chunk(
-        "First sentence. Second sentence. Third sentence.",
-        client,
-        sentences_per_passage=1,
-        group_size=3,
-    )
-    assert len(chunks) == 3
+async def test_semantic_chunk_carries_remainder_into_next_block():
+    # After a split, the tail of the block must seed the next accumulation
+    # cycle: the sentence the model named reappears at the start of a later
+    # prompt, never inside the just-emitted chunk.
+    text = "Alpha one. Alpha two. Beta one. Beta two."
+    seen_prompts: list[str] = []
+
+    class _RecordingClient(_ScriptedClient):
+        async def chat(self, system, messages, tools, **kwargs):  # type: ignore[no-untyped-def]
+            seen_prompts.append(messages[0].content[0].text)
+            return await super().chat(system, messages, tools, **kwargs)
+
+    client = _RecordingClient(["Beta one."])
+    chunks = await semantic_chunk(text, client, target_words=5)
+
+    assert chunks == ["Alpha one. Alpha two.", "Beta one. Beta two."]
+    assert client.calls == 1
+    # The queried block contained all four sentences (target 5 words reached
+    # after three, but the two-sentence minimum plus word budget absorbed all).
+    assert "Beta one." in seen_prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_semantic_chunk_first_sentence_answer_means_no_split():
+    # The model answering with the block's first sentence is the "do not split"
+    # signal: the whole accumulated block is emitted as one chunk.
+    text = "One fish. Two fish. Red fish. Blue fish."
+    client = _ScriptedClient(["One fish."])
+    chunks = await semantic_chunk(text, client, target_words=3)
+
+    assert client.calls == 1
+    assert chunks == ["One fish. Two fish.", "Red fish. Blue fish."]
+
+
+@pytest.mark.asyncio
+async def test_semantic_chunk_near_verbatim_answer_fuzzy_matches():
+    # A fragment of a sentence (the paper's hallucination case) must still map
+    # to the closest valid sentence via string matching.
+    text = "Alpha one. Alpha two. Beta one. Beta two."
+    client = _ScriptedClient(['"Beta one"'])
+    chunks = await semantic_chunk(text, client, target_words=5)
+
+    assert chunks == ["Alpha one. Alpha two.", "Beta one. Beta two."]
+
+
+@pytest.mark.asyncio
+async def test_semantic_chunk_refusal_emits_block_whole():
+    # An unmatchable refusal must never merge across blocks or drop content:
+    # the queried block is emitted whole.
+    text = "One fish. Two fish. Red fish. Blue fish."
+    client = _ScriptedClient(["I cannot split this text."])
+    chunks = await semantic_chunk(text, client, target_words=3)
+
+    assert chunks == ["One fish. Two fish.", "Red fish. Blue fish."]
 
 
 @pytest.mark.asyncio
 async def test_semantic_chunk_respects_llm_call_cap():
-    # max_llm_calls=0 flushes every passage verbatim without any LLM call.
-    client = _ScriptedClient(answer="2")
-    chunks = await semantic_chunk(
-        "One. Two. Three. Four.",
-        client,
-        sentences_per_passage=1,
-        group_size=2,
-        max_llm_calls=0,
-    )
+    # max_llm_calls=0 emits target-sized blocks verbatim without any LLM call.
+    text = "One. Two. Three. Four. Five. Six."
+    client = _ScriptedClient(["Two."])
+    chunks = await semantic_chunk(text, client, target_words=2, max_llm_calls=0)
+
     assert client.calls == 0
-    assert chunks == ["One.", "Two.", "Three.", "Four."]
+    assert chunks == ["One. Two.", "Three. Four.", "Five. Six."]
+
+
+@pytest.mark.asyncio
+async def test_semantic_chunk_empty_text():
+    assert await semantic_chunk("", _BoomClient()) == []
 
 
 @pytest.mark.asyncio
 async def test_fetch_url_uses_semantic_chunker_when_enabled(httpx_mock: HTTPXMock):
-    """The call-site edit must invoke the new segmenter on the query path."""
+    """The call-site edit must invoke the segmenter and honor the named split."""
     httpx_mock.add_response(
         url="https://example.com/filing",
         text=SAMPLE_HTML,
         headers={"content-type": "text/html"},
     )
-    client = _ScriptedClient(answer="2")
-    tool = FetchUrlTool(model_client=client, semantic_chunking=True, retrieve_k=2)
+    # retrieve_chunk_tokens doubles as the target block size in words; 25 makes
+    # the six-sentence sample trigger exactly one split query.
+    client = _ScriptedClient(["The board declared a dividend."])
+    tool = FetchUrlTool(
+        model_client=client, semantic_chunking=True, retrieve_k=2, retrieve_chunk_tokens=25
+    )
     out = await tool.run({"url": "https://example.com/filing", "query": "dividend"})
 
-    # The LLM was actually consulted (segmenter ran), and BM25 still returns ranked chunks.
-    assert client.calls > 0
+    # The LLM was consulted and the document split at the named sentence: the
+    # dividend content and the revenue content surface as separate chunks.
+    # (With only two chunks BM25's IDF is exactly 0 here, so assert the split
+    # structure rather than the ranking.)
+    assert client.calls == 1
     assert "chunk 1" in out
-    assert "payout ratio" in out
+    sections = out.split("--- chunk ")
+    assert len(sections) == 3  # preamble + two ranked chunks
+    dividend_section = next(s for s in sections if "payout ratio" in s)
+    assert "Revenue grew" not in dividend_section
+    revenue_section = next(s for s in sections if "Revenue grew" in s)
+    assert "payout ratio" not in revenue_section
 
 
 @pytest.mark.asyncio
