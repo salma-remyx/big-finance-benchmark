@@ -1,23 +1,34 @@
 """LLM-driven variable-size document segmentation for fetch_url retrieval.
 
 Adapted from LumberChunker (Pipón-Noriega et al., 2024,
-https://arxiv.org/abs/2406.17526). LumberChunker accumulates consecutive
-sentences into a block until it reaches a target chunk size in words, then
-prompts an LLM: "If you divide the following text into two chunks, what is the
-first sentence where the second chunk should start?" The block splits at the
-sentence the model names; the leading part becomes one chunk and the remainder
-carries forward as the start of the next accumulation cycle. The result is a
-``list[str]`` of semantically coherent, variable-size segments that drop into
-``fetch_url``'s BM25 in-document retrieval in place of the fixed-size paragraph
-chunker, which matters for long SEC filings where fixed token windows routinely
-cut a topic in half.
+https://arxiv.org/abs/2406.17526; reference implementation:
+https://github.com/joaodsmarques/LumberChunker). The document's paragraphs are
+tagged with sequential IDs ("ID 0: <text>", "ID 1: <text>", ...) and
+consecutive paragraphs accumulate into a block until it reaches the target
+size θ — 550 tokens, approximated as 1.2 tokens per word exactly as the
+reference's ``count_words`` does. The LLM is then prompted (system prompt
+verbatim from the reference):
 
-Mode: direct port of the paper's core mechanism (target-size accumulation plus
-LLM-located split points at sentence granularity), reusing the harness's own
-``ModelClient`` for the LLM calls. The single auxiliary substitution is the
-sentence tokenizer — the paper uses spaCy; we use a dependency-free regex
-splitter so the harness pulls in no extra NLP dependency. That is preprocessing
-only; it does not change the segmentation mechanism.
+    "Find the first paragraph (not the first one) where the content clearly
+    changes compared to the previous paragraphs. ... Return the ID of the
+    paragraph with the content shift as in the exemplified format:
+    'Answer: ID XXXX'."
+
+The returned ID is parsed with a regex and recorded as a boundary: paragraphs
+before it form one chunk and accumulation restarts at the named paragraph.
+When the answer cannot be parsed, no boundary is recorded and the block
+merges forward into the current chunk, so no content is ever dropped. The
+result is a ``list[str]`` of semantically coherent, variable-size segments
+that drop into ``fetch_url``'s BM25 in-document retrieval in place of the
+fixed-size paragraph chunker, which matters for long SEC filings where fixed
+token windows routinely cut a topic in half.
+
+Mode: direct port of the reference's segmentation loop (ID-tagged paragraph
+accumulation, the reference prompt, regex ID parsing, merge-forward failure
+semantics), reusing the harness's own ``ModelClient`` for the LLM calls. The
+single auxiliary substitution is paragraph pre-segmentation — the reference
+consumes pre-segmented book paragraphs; we split fetched text on blank lines.
+That is preprocessing only; it does not change the segmentation mechanism.
 """
 
 from __future__ import annotations
@@ -27,165 +38,102 @@ import re
 from big_finance_harness.models.base import ModelClient
 from big_finance_harness.types import Message, TextBlock
 
-# Target accumulated block size in words. Once the buffer reaches this size the
-# LLM is asked where to split it. The paper evaluates targets up to ~450 words.
-DEFAULT_TARGET_WORDS = 450
-# Cap on LLM calls per document. A long SEC filing can yield hundreds of
-# target-size blocks; this bounds cost. Text past the cap is emitted in
-# target-sized blocks so no content is silently dropped.
-DEFAULT_MAX_LLM_CALLS = 40
-# The model answers with a full sentence copied from the text, so the response
-# budget must fit the longest plausible sentence, not just an integer.
-DEFAULT_MAX_OUTPUT_TOKENS = 256
+# Target accumulated block size θ in tokens. The paper sweeps θ over
+# 450–1000; the reference implementation uses 550.
+DEFAULT_TARGET_TOKENS = 550
+# The reference stops querying within the last few paragraphs of a document;
+# the trailing paragraphs simply extend the final chunk.
+_TAIL_PARAGRAPHS = 5
 
-# Break on whitespace following sentence-ending punctuation. Deliberately simple
-# — good enough for prose-heavy filings without a spaCy/nltk dependency.
-_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
-_WORD_RE = re.compile(r"\w+")
+_ANSWER_RE = re.compile(r"Answer: ID \w+")
+_DIGITS_RE = re.compile(r"\d+")
 
-_SYSTEM_PROMPT = (
-    "You segment documents into semantically coherent chunks. Given a block of "
-    "consecutive sentences from one document, locate the point where the content "
-    "begins to shift to a new topic."
-)
+# Verbatim from the reference implementation (LumberChunker-Segmentation.py).
+_SYSTEM_PROMPT = """You will receive as input an english document with paragraphs identified by 'ID XXXX: <text>'.
+
+Task: Find the first paragraph (not the first one) where the content clearly changes compared to the previous paragraphs.
+
+Output: Return the ID of the paragraph with the content shift as in the exemplified format: 'Answer: ID XXXX'.
+
+Additional Considerations: Avoid very long groups of paragraphs. Aim for a good balance between identifying content shifts and keeping groups manageable."""
 
 
-def split_sentences(text: str) -> list[str]:
-    """Split ``text`` into sentences with a dependency-free regex."""
-    text = text.strip()
-    if not text:
-        return []
-    return [s.strip() for s in _SENTENCE_END_RE.split(text) if s.strip()]
+def split_paragraphs(text: str) -> list[str]:
+    """Split ``text`` into paragraphs on blank-line boundaries."""
+    return [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
 
 
-def _word_count(text: str) -> int:
-    return len(text.split())
+def _approx_tokens(text: str) -> int:
+    """Approximate the token count as 1.2 tokens per word (reference count_words)."""
+    return round(1.2 * len(text.split()))
 
 
-def _build_split_prompt(block: str) -> str:
-    """The paper's prompt formulation, verbatim in spirit (§2 of the paper)."""
-    return (
-        f"Text:\n{block}\n\n"
-        "If you divide the above text into two chunks, what is the first sentence "
-        "where the second chunk should start? Respond with ONLY that sentence, "
-        "copied verbatim from the text. If the text is a single coherent passage "
-        "that should not be divided, respond with the first sentence of the text."
-    )
-
-
-def _normalize(text: str) -> str:
-    return " ".join(text.split()).strip("\"'“”‘’ ")
-
-
-def _match_split_sentence(response: str, sentences: list[str]) -> int | None:
-    """Locate the sentence the LLM named as the split point.
-
-    Returns the index of the matched sentence, or ``None`` when the response
-    names the first sentence (the model's "do not split" signal) or cannot be
-    matched to any sentence (refusal or hallucination) — both mean "emit the
-    block whole". Matching is exact first, then containment, then word overlap,
-    per the paper's suggestion to map the output to the closest valid sentence
-    via standard string matching.
-    """
-    answer = _normalize(response)
-    if not answer:
+def _parse_answer_id(response: str) -> int | None:
+    """Parse the paragraph ID out of an 'Answer: ID XXXX' response."""
+    match = _ANSWER_RE.search(response)
+    if match is None:
         return None
-    lowered = answer.lower()
-    normed = [_normalize(s) for s in sentences]
-    # Exact match: the model copied a sentence verbatim.
-    for idx, sent in enumerate(normed):
-        if sent.lower() == lowered:
-            return idx if idx > 0 else None
-    # Containment: a sentence appears inside a longer quoted answer. Sentence 0
-    # is excluded — matching it means "do not split".
-    for idx, sent in enumerate(normed[1:], start=1):
-        if sent.lower() in lowered:
-            return idx
-    # Fuzzy fallback: best word-overlap match for near-verbatim answers.
-    answer_words = set(_WORD_RE.findall(lowered))
-    if not answer_words:
-        return None
-    best_idx: int | None = None
-    best_score = 0.0
-    for idx, sent in enumerate(normed):
-        words = set(_WORD_RE.findall(sent.lower()))
-        if not words:
-            continue
-        score = len(answer_words & words) / min(len(answer_words), len(words))
-        if score > best_score:
-            best_idx, best_score = idx, score
-    if best_idx is None or best_idx == 0 or best_score < 0.6:
-        return None
-    return best_idx
-
-
-async def _ask_split_index(
-    model: ModelClient, sentences: list[str], *, max_output_tokens: int
-) -> int | None:
-    block = " ".join(sentences)
-    response = await model.chat(
-        system=_SYSTEM_PROMPT,
-        messages=[Message(role="user", content=[TextBlock(text=_build_split_prompt(block))])],
-        tools=[],
-        temperature=0.0,
-        max_output_tokens=max_output_tokens,
-    )
-    return _match_split_sentence(response.text, sentences)
+    digits = _DIGITS_RE.search(match.group(0))
+    return int(digits.group()) if digits else None
 
 
 async def semantic_chunk(
     text: str,
     model: ModelClient,
     *,
-    target_words: int = DEFAULT_TARGET_WORDS,
-    max_llm_calls: int = DEFAULT_MAX_LLM_CALLS,
-    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    target_tokens: int = DEFAULT_TARGET_TOKENS,
 ) -> list[str]:
     """Segment ``text`` into variable-size chunks using an LLM.
 
-    Mirrors LumberChunker's iterative loop: sentences accumulate into a block
-    until it reaches ``target_words`` words, then the LLM is asked for the first
-    sentence where a second chunk should start. The block splits at that
-    sentence — the leading part becomes a chunk and the remainder carries
-    forward as the start of the next block. When the LLM names the first
-    sentence, refuses to split, or hallucinates a sentence not in the block, the
-    block is emitted whole. LLM calls are capped at ``max_llm_calls`` — past the
-    cap the remaining text is emitted in target-sized blocks so no content is
-    silently dropped.
+    Mirrors the reference loop: paragraphs accumulate into a block until it
+    reaches ``target_tokens`` approximate tokens, then the LLM is asked for
+    the ID of the first paragraph where the content clearly changes. The
+    block splits at that paragraph — the leading part becomes a chunk and
+    accumulation restarts at the named paragraph. When the answer cannot be
+    parsed, no boundary is recorded and the block merges forward into the
+    current chunk; either way no content is dropped.
     """
-    sentences = split_sentences(text)
-    if not sentences:
+    paragraphs = split_paragraphs(text)
+    if not paragraphs:
         return []
 
-    chunks: list[str] = []
-    buffer: list[str] = []
-    buffer_words = 0
-    calls = 0
-    i = 0
-    while i < len(sentences):
-        # Accumulate until the block reaches the target chunk size (paper §2.1:
-        # the LLM is queried once the growing chunk hits the target size k).
-        while i < len(sentences) and (buffer_words < target_words or len(buffer) < 2):
-            buffer.append(sentences[i])
-            buffer_words += _word_count(sentences[i])
+    tagged = [f"ID {idx}: {p}" for idx, p in enumerate(paragraphs)]
+    n = len(tagged)
+    boundaries: list[int] = []
+    start = 0
+    while start < n - _TAIL_PARAGRAPHS:
+        # Accumulate until the block reaches the target size θ (paper §2: the
+        # LLM is queried once the growing chunk hits the target size).
+        i = 0
+        block_tokens = 0
+        while block_tokens < target_tokens and start + i < n - 1:
             i += 1
-        if i < len(sentences) and len(buffer) >= 2 and calls < max_llm_calls:
-            calls += 1
-            split_idx = await _ask_split_index(model, buffer, max_output_tokens=max_output_tokens)
-            if split_idx is None:
-                # No content shift found (or an unmatchable answer): keep whole.
-                chunks.append(" ".join(buffer))
-                buffer = []
-                buffer_words = 0
-            else:
-                chunks.append(" ".join(buffer[:split_idx]))
-                buffer = buffer[split_idx:]
-                buffer_words = _word_count(" ".join(buffer))
+            block_tokens = _approx_tokens("\n".join(tagged[start : start + i]))
+        # The paragraph that crossed the target is held out of the prompt and
+        # seeds the next accumulation cycle (reference: the prompt covers
+        # paragraphs [start, start+i-1) unless only one accumulated).
+        end = start + max(i - 1, 1)
+        document = "\n".join(tagged[start:end])
+
+        response = await model.chat(
+            system=_SYSTEM_PROMPT,
+            messages=[Message(role="user", content=[TextBlock(text=f"\nDocument:\n{document}")])],
+            tools=[],
+            temperature=0.1,
+        )
+        answer_id = _parse_answer_id(response.text)
+        if answer_id is None or not (start < answer_id < end):
+            # Unparseable answer (or one naming a paragraph outside the
+            # prompted block, including the forbidden first one): record no
+            # boundary — the block merges forward into the current chunk.
+            start = end
         else:
-            # End of text, or the LLM call cap is reached: flush the block.
-            # Past the cap this degrades to target-sized blocks; nothing is lost.
-            if buffer:
-                chunks.append(" ".join(buffer))
-                buffer = []
-                buffer_words = 0
+            boundaries.append(answer_id)
+            start = answer_id
+
+    chunks: list[str] = []
+    prev = 0
+    for boundary in [*boundaries, n]:
+        chunks.append("\n\n".join(paragraphs[prev:boundary]))
+        prev = boundary
     return chunks

@@ -270,11 +270,9 @@ class FetchUrlTool(Tool):
 
         if query:
             if self.model_client is not None and self.semantic_chunking:
-                # Reuse the fixed-path chunk budget as the semantic path's target
-                # block size (words ≈ tokens for prose filings).
-                chunks = await semantic_chunk(
-                    body, self.model_client, target_words=self.retrieve_chunk_tokens
-                )
+                # LumberChunker-style segmentation with the reference's target
+                # block size (550 approximate tokens).
+                chunks = await semantic_chunk(body, self.model_client)
             else:
                 chunks = _split_paragraphs(body, self.retrieve_chunk_tokens)
             top = _bm25_top_k(chunks, query, self.retrieve_k)
