@@ -19,7 +19,14 @@ observed_landing_zones:
       scripts/run_eval_set.py
     branch: llm-as-a-verifier-a-general-purpose-verification-framework
     timestamp: '2026-07-21T23:19:09Z'
-  last_observed: '2026-07-21T23:19:09Z'
+  - arxiv: 2607.21340v1
+    mode: Mode 2 (adapted port)
+    call_site_specifics: "big_finance_harness/grader.py::grade() \u2014 invoked via\
+      \ the new opt-in cm_lrs=True parameter; scripts/run_eval_set.py calls grade()\
+      \ (the pipeline entry point) but does not yet flip the flag, so the score"
+    branch: capital-markets-llm-reliability-score-cm-lrs-from-plausible-
+    timestamp: '2026-07-30T16:43:29Z'
+  last_observed: '2026-07-30T16:43:29Z'
 - path: big_finance_harness/tools/
   shape_tags:
   - library-shape-public-api
@@ -40,4 +47,4 @@ rejected_shapes:
   - arxiv: 2607.08332v1
     timestamp: '2026-07-20T09:00:50Z'
 coordination_signals: []
-last_updated: '2026-07-22T19:30:22Z'
+last_updated: '2026-07-30T16:43:29Z'
