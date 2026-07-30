@@ -152,6 +152,42 @@ class GradedRubricLine(BaseModel):
     judge_explanation: str | None = None
 
 
+class CmLrsDimensionScore(BaseModel):
+    """One CM-LRS reliability dimension's 0-5 score with the judge's rationale.
+
+    The integer `score` is clamped to [0, 5] client-side. The judge's response schema
+    is deliberately unbounded (no minimum/maximum), mirroring the grader's choice to
+    avoid Vertex Gemini's "too many states" rejection on bounded integer schemas.
+    """
+
+    key: str
+    name: str
+    score: int
+    rationale: str | None = None
+
+
+class CmLrsScore(BaseModel):
+    """Capital Markets LLM Reliability Score — a 7-dimension 0-5 "bankability" scorecard.
+
+    Adapted from CM-LRS (arXiv:2607.21340). Each dimension is scored 0-5 against a
+    rubric anchored on signals reviewers in regulated settings use; `aggregate` is a
+    tunable weighted mean over the dimensions. This is an additional scoring pass
+    layered on the canonical binary rubric grade, not a replacement for it.
+    """
+
+    question_id: str
+    trial_idx: int = 0
+    model: str
+    judge: str
+    dimensions: list[CmLrsDimensionScore]
+    aggregate: float
+    weights: dict[str, float]
+    final_answer: str | None = None
+    judge_prompt_tokens: int = 0
+    judge_completion_tokens: int = 0
+    judge_cost_usd: float | None = None
+
+
 class GradedRun(BaseModel):
     question_id: str
     trial_idx: int = 0  # Matches the trace's trial_idx for multi-seed runs.
@@ -170,3 +206,7 @@ class GradedRun(BaseModel):
     judge_prompt_tokens: int = 0
     judge_completion_tokens: int = 0
     judge_cost_usd: float | None = None
+    # Optional Capital Markets LLM Reliability Score (CM-LRS) pass. Populated only
+    # when the caller opts in via `grade(..., cm_lrs=True)`; None otherwise, so this
+    # field is backward-compatible with previously-written `*.grades.jsonl`.
+    cm_lrs: CmLrsScore | None = None

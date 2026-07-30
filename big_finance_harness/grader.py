@@ -33,6 +33,7 @@ from big_finance_harness.models.base import (
     parse_model_id,
 )
 from big_finance_harness.types import (
+    CmLrsScore,
     DatasetItem,
     GradedRubricLine,
     GradedRun,
@@ -190,12 +191,19 @@ async def grade(
     judge_model_id: str,
     max_output_tokens: int = 16384,
     judge_alias: str | None = None,
+    cm_lrs: bool = False,
+    cm_lrs_weights: dict[str, float] | None = None,
 ) -> GradedRun:
     """Grade a run with the given judge.
 
     `judge_alias`: if provided, the stored `GradedRun.judge` field uses this string
     instead of `judge_model_id`. Useful when substituting a same-family model and
     wanting downstream analysis to treat the grades as a single judge bucket.
+
+    `cm_lrs`: when True, run an additional Capital Markets LLM Reliability Score pass
+    (see `big_finance_harness.cm_lrs`) and attach its 7-dimension 0-5 scorecard to
+    `GradedRun.cm_lrs`. This is a second judge call, so it doubles judge-side cost when
+    enabled; it is off by default. `cm_lrs_weights` optionally tunes the aggregate.
     """
     if run.question_id != item.id:
         raise ValueError(f"run/item id mismatch: run={run.question_id} item={item.id}")
@@ -299,6 +307,20 @@ async def grade(
             points_earned += line.points
             lines_earned += 1
 
+    cm_lrs_score: CmLrsScore | None = None
+    if cm_lrs:
+        # Lazy import to avoid a grader <-> cm_lrs import cycle at module load.
+        from big_finance_harness.cm_lrs import score_cm_lrs
+
+        cm_lrs_score = await score_cm_lrs(
+            run=run,
+            item=item,
+            judge_model_id=judge_model_id,
+            weights=cm_lrs_weights,
+            max_output_tokens=max_output_tokens,
+            judge_alias=judge_alias,
+        )
+
     return GradedRun(
         question_id=item.id,
         trial_idx=run.trial_idx,
@@ -315,4 +337,5 @@ async def grade(
         judge_prompt_tokens=judge_prompt_tokens,
         judge_completion_tokens=judge_completion_tokens,
         judge_cost_usd=judge_cost_usd,
+        cm_lrs=cm_lrs_score,
     )

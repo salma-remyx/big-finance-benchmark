@@ -186,6 +186,14 @@ The paper's Table 1 was produced by:
   and no filesystem, network, or syscall isolation. Users running untrusted
   prompts should run the harness inside a container with `--network=none
   --read-only` and a tightened seccomp profile.
+- **CM-LRS bankability score (opt-in).** An additional scoring pass, adapted from
+  CM-LRS (arXiv:2607.21340), that scores each run 0-5 across seven reliability
+  dimensions (factual accuracy, evidence traceability, numerical consistency,
+  workflow completeness, source discipline, decision usefulness, reviewability)
+  against a reviewer rubric, with a tunable weighted aggregate. It layers on the
+  canonical binary rubric grade rather than replacing it. Off by default; enable
+  with `grade(..., cm_lrs=True)` (a second judge call per run) and optionally
+  `cm_lrs_weights=` to tune the aggregate. See `big_finance_harness/cm_lrs.py`.
 
 ## Contamination policy
 
