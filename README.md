@@ -218,3 +218,29 @@ If you use this benchmark or harness, please cite the paper
 
 Apache 2.0. See [`LICENSE`](LICENSE). The bundled 50-item dataset subset under
 `data/` is licensed separately under CC BY 4.0; see [`data/LICENSE-DATA`](data/LICENSE-DATA).
+
+## Capability diagnosis (weak-capability clustering)
+
+`scripts/diagnose_capabilities.py` is a sibling of `build_analysis_csv.py` that
+turns a run's rubric grades into a *diagnosis of why a model fails*, not just a
+score. It treats each rubric criterion as a capability probe, clusters the
+probes into a hierarchical capability tree, scores the model at every node, and
+surfaces the weak capabilities at the granularity where each failure is clearest
+— pointing at concrete things to fix for the next model iteration.
+
+```bash
+.venv/bin/python scripts/diagnose_capabilities.py \
+  --run-dir runs/headline \
+  --out-dir runs/headline/analysis
+```
+
+This writes `capability_diagnosis.json` (the full capability tree plus the
+selected weak clusters) and prints a short report. It reads the same
+`<label>.grades.*.jsonl` files the analysis CSVs come from, so run it after the
+eval + grade pipeline. The diagnostic logic lives in
+`big_finance_harness/capability_diagnosis.py` and is a parameter-free adapted
+port of CRAFT (Clustering Rubrics to Diagnose Weak LLM Capabilities): the
+paper's learned capability-description extractor and embedder are replaced with
+normalised rubric-text tokens and bag-of-words cosine clustering, and the
+targeted fine-tuning-data step is dropped — the harness measures models, it does
+not train them.
