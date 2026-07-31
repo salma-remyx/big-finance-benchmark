@@ -218,3 +218,29 @@ If you use this benchmark or harness, please cite the paper
 
 Apache 2.0. See [`LICENSE`](LICENSE). The bundled 50-item dataset subset under
 `data/` is licensed separately under CC BY 4.0; see [`data/LICENSE-DATA`](data/LICENSE-DATA).
+
+## Parametric-hindsight audit (opt-in)
+
+A model can contaminate a historical financial decision by leaking parametric
+knowledge of a *realized* outcome ("parametric hindsight"). The harness ships an
+opt-in, black-box audit for it (adapted from *HindsightBench*, arXiv:2607.18867v1)
+that probes each model directly through the same text API used for eval — no
+backtests, logprobs, or corpus access.
+
+Append `--hindsight-audit` to any orchestrator run. For each model it writes
+`<model_label>.hindsight.jsonl` (sibling to `grades.jsonl`) with one row per probe:
+per-arm leakage across a four-arm date-manipulation matrix (revealed / date-only /
+masked / transplanted), plus `trigger_strength`, `transplant_effect`,
+`recoverability`, and `recall`. Override the built-in probe set with
+`--hindsight-probes probes.jsonl` (one `HindsightProbe` per line).
+
+```bash
+.venv/bin/python scripts/run_eval_set.py \
+  --dataset data/big_finance_subset.jsonl \
+  --run-id hindsight --kind ablation --sample-n 5 \
+  --skip-grade --hindsight-audit
+```
+
+Pin `--thinking` and record it alongside the rows: the audit's trigger estimate is
+sensitive to the serving/thinking regime, so a real audit should hold both fixed.
+

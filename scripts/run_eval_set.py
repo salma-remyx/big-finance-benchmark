@@ -50,6 +50,12 @@ from big_finance_harness.agent import (
     run_question,
 )
 from big_finance_harness.grader import grade
+from big_finance_harness.hindsight_audit import (
+    DEFAULT_PROBES,
+    HindsightProbe,
+    load_probes,
+    run_hindsight_audit,
+)
 from big_finance_harness.models import make_client
 from big_finance_harness.models.base import LiteLLMClient
 from big_finance_harness.prompts import SYSTEM_PROMPT
@@ -415,6 +421,28 @@ async def _grade_one_model(
     "model record under a unified judge label so downstream analysis treats the "
     "grades as one bucket.",
 )
+@click.option(
+    "--hindsight-audit",
+    is_flag=True,
+    default=False,
+    help="Run the HindsightBench parametric-hindsight audit on each model after eval, "
+    "writing <label>.hindsight.jsonl sibling to grades.jsonl. Black-box, probe-level.",
+)
+@click.option(
+    "--hindsight-probes",
+    "hindsight_probes",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="JSONL of HindsightProbe rows to audit. If omitted, uses the built-in default "
+    "probe set (clearly-historical financial hindsight scenarios).",
+)
+@click.option(
+    "--hindsight-trials",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Trials per probe arm for the hindsight audit.",
+)
 def main(
     dataset: Path,
     run_id: str,
@@ -434,6 +462,9 @@ def main(
     skip_models: tuple[str, ...],
     grades_suffix: str,
     judge_alias: str | None,
+    hindsight_audit: bool,
+    hindsight_probes: Path | None,
+    hindsight_trials: int,
 ) -> None:
     """Run all default models on a dataset (or sample) and write a manifest+traces+grades."""
     out_dir = Path("runs") / run_id
@@ -539,6 +570,23 @@ def main(
         )
         manifest["results"]["grade"] = grade_summaries
 
+    # Hindsight audit phase (opt-in): black-box parametric-hindsight audit per model.
+    if hindsight_audit:
+        probes = load_probes(hindsight_probes) if hindsight_probes else list(DEFAULT_PROBES)
+        click.echo(
+            f"\n=== hindsight audit phase: {len(active_models)} models x {len(probes)} probes ==="
+        )
+        audit_summaries = asyncio.run(
+            _run_hindsight_audit_phase(
+                active_models,
+                probes,
+                out_dir,
+                hindsight_trials,
+                thinking,
+            )
+        )
+        manifest["results"]["hindsight_audit"] = audit_summaries
+
     manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
     manifest["total_elapsed_s"] = round(time.monotonic() - started_mono, 1)
     manifest_path.write_text(json.dumps(manifest, indent=2))
@@ -601,6 +649,74 @@ async def _run_grade_phase(
                 judge_alias=judge_alias,
             )
             for label, _ in models
+        ]
+    )
+
+
+async def _run_hindsight_audit_one_model(
+    *,
+    label: str,
+    model_id: str,
+    probes: list[HindsightProbe],
+    out_dir: Path,
+    n_trials: int,
+    thinking: str,
+) -> dict[str, Any]:
+    """Audit one model for parametric hindsight; write `<label>.hindsight.jsonl`.
+
+    Sibling artifact to `<label>.grades.jsonl`. One `HindsightAuditRow` per probe.
+    """
+    audit_path = out_dir / f"{label}.hindsight.jsonl"
+    started = time.monotonic()
+    client = make_client(model_id)
+    rows = await run_hindsight_audit(
+        client=client,
+        probes=probes,
+        n_trials=n_trials,
+        thinking=thinking,  # type: ignore[arg-type]
+    )
+    with audit_path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(row.model_dump_json() + "\n")
+    elapsed = time.monotonic() - started
+    click.echo(
+        f"[{label}/hindsight] {len(rows)} probes audited, "
+        f"mean trigger_strength={_mean_trigger(rows):.2f}, {elapsed:.0f}s"
+    )
+    return {
+        "label": label,
+        "hindsight_path": str(audit_path.relative_to(out_dir)),
+        "n_probes": len(rows),
+        "mean_trigger_strength": round(_mean_trigger(rows), 4),
+        "n_trials": n_trials,
+        "elapsed_s": round(elapsed, 1),
+    }
+
+
+def _mean_trigger(rows: list[Any]) -> float:
+    if not rows:
+        return 0.0
+    return sum(getattr(r, "trigger_strength", 0.0) for r in rows) / len(rows)
+
+
+async def _run_hindsight_audit_phase(
+    models: list[tuple[str, str]],
+    probes: list[HindsightProbe],
+    out_dir: Path,
+    n_trials: int,
+    thinking: str,
+) -> list[dict[str, Any]]:
+    return await asyncio.gather(
+        *[
+            _run_hindsight_audit_one_model(
+                label=label,
+                model_id=mid,
+                probes=probes,
+                out_dir=out_dir,
+                n_trials=n_trials,
+                thinking=thinking,
+            )
+            for label, mid in models
         ]
     )
 
