@@ -218,3 +218,29 @@ If you use this benchmark or harness, please cite the paper
 
 Apache 2.0. See [`LICENSE`](LICENSE). The bundled 50-item dataset subset under
 `data/` is licensed separately under CC BY 4.0; see [`data/LICENSE-DATA`](data/LICENSE-DATA).
+
+## Optional: task-level LLM routing
+
+`big_finance_harness.models.task_router.TaskRouterClient` is a drop-in `ModelClient`
+that routes each question to one of several backends **once at admission**, pins every
+step of that question's trajectory to the same backend, and learns the routing policy
+from the task's **delayed terminal reward** (grader correctness + trajectory latency).
+It uses a LinUCB contextual bandit and can persist its policy to disk so routing
+improves across runs. Adapted from TRACE-ROUTER (arXiv:2607.22465).
+
+```python
+from big_finance_harness.agent import run_question
+from big_finance_harness.models.task_router import make_router
+
+router = make_router(
+    ["anthropic:claude-haiku-4-5-20251001", "anthropic:claude-opus-4-7-20260416"],
+    policy_path="runs/router_policy.json",
+)
+record = await run_question(
+    question_id=..., question=..., reference_answer=...,
+    client=router, tools=..., system_prompt=...,
+)
+# after grading — fold the binary verdict + latency back into the policy
+router.feedback(record.question, graded.final_answer_correct,
+                latency_seconds=record.total_wallclock_seconds)
+```
