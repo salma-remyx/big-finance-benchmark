@@ -218,3 +218,22 @@ If you use this benchmark or harness, please cite the paper
 
 Apache 2.0. See [`LICENSE`](LICENSE). The bundled 50-item dataset subset under
 `data/` is licensed separately under CC BY 4.0; see [`data/LICENSE-DATA`](data/LICENSE-DATA).
+
+## Optional library tools (not in the default agent surface)
+
+The default tool inventory above is the canonical model-facing surface from the
+paper and is unchanged. The tools below are opt-in / library-callable only — they
+compound the harness's evidence-traceability capabilities without altering what the
+agent sees by default.
+
+| Tool | Backed by | Opt in |
+|---|---|---|
+| `grounding_check` | dependency-free lexical + numeric entailment proxy — adapted from [MiniCheck](https://arxiv.org/abs/2404.10774) | `default_tools(include_grounding_check=True)` or `GroundingCheckTool()` |
+
+`grounding_check` takes a `(claim, document)` pair and returns
+`supported` / `partially_supported` / `unsupported`, a numeric support score, and
+the document sentence that best backs the claim. It decomposes a claim into atomic
+sub-claims (a wrong or invented figure makes a claim `unsupported`). MiniCheck's
+fine-tuned NLI fact-checker is replaced by a parameter-free proxy; the
+`(document, claim) -> supported/not` contract and the decompose-then-aggregate
+shape are preserved.
