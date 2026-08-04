@@ -14,7 +14,10 @@ NOT see the points associated with each line — points are aggregated client-si
 grading so the judge can't be biased toward heavy-weight items.
 
 Inter-judge agreement: callers should grade with at least two non-evaluated judges and
-report Cohen's kappa; this module grades with one judge per call.
+report Cohen's kappa; this module grades with one judge per call. An opt-in compound
+path (`grade(compound_samples=N)`) instead draws N independent verdicts per question
+and reduces them by majority vote, trading extra judge-time compute for a more
+reliable single-judge verdict.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ import os
 
 import litellm
 
+from big_finance_harness.compound_judge import aggregate_judge_samples
 from big_finance_harness.models.base import (
     _to_litellm_model,
     _vertex_location_for,
@@ -183,6 +187,42 @@ def _build_response_schema(num_rubric_lines: int) -> dict[str, Any]:
     }
 
 
+async def _run_judge_once(
+    kwargs: dict[str, object],
+    judge_model_id: str,
+) -> tuple[dict[str, Any], int, int, float | None]:
+    """Make one structured judge call, parse its JSON, and capture token/cost accounting.
+
+    Handles the per-judge concurrency semaphore and the provider "temperature
+    deprecated" retry. ``kwargs`` is copied so the retry's ``pop("temperature")`` can't
+    race a concurrent sibling when the compound path fans out several calls at once.
+    Returns ``(parsed_verdict, prompt_tokens, completion_tokens, cost_usd)`` so the
+    single-call and compound paths share one accounting surface.
+    """
+    kwargs = dict(kwargs)
+    sem = _judge_semaphore(judge_model_id)
+    async with sem:
+        try:
+            response = await litellm.acompletion(**kwargs)
+        except (litellm.BadRequestError, litellm.InternalServerError) as e:
+            msg = str(e).lower()
+            if "temperature" in msg and "deprecated" in msg:
+                kwargs.pop("temperature", None)
+                response = await litellm.acompletion(**kwargs)
+            else:
+                raise
+    content = response.choices[0].message.content or "{}"
+    parsed = json.loads(content)
+
+    usage = getattr(response, "usage", None)
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    hidden = getattr(response, "_hidden_params", {}) or {}
+    cost = hidden.get("response_cost")
+    cost_usd = float(cost) if cost is not None else None
+    return parsed, prompt_tokens, completion_tokens, cost_usd
+
+
 async def grade(
     *,
     run: RunRecord,
@@ -190,15 +230,24 @@ async def grade(
     judge_model_id: str,
     max_output_tokens: int = 16384,
     judge_alias: str | None = None,
+    compound_samples: int = 1,
 ) -> GradedRun:
     """Grade a run with the given judge.
 
     `judge_alias`: if provided, the stored `GradedRun.judge` field uses this string
     instead of `judge_model_id`. Useful when substituting a same-family model and
     wanting downstream analysis to treat the grades as a single judge bucket.
+
+    `compound_samples`: when greater than 1, scale judge-time compute by running the
+    structured judge `compound_samples` times and reducing the verdicts by majority
+    vote (see `big_finance_harness.compound_judge`). Token and judge-cost accounting
+    is summed across the calls. Defaults to 1, which reproduces the single-call judge
+    exactly.
     """
     if run.question_id != item.id:
         raise ValueError(f"run/item id mismatch: run={run.question_id} item={item.id}")
+    if compound_samples < 1:
+        raise ValueError(f"compound_samples must be >= 1, got {compound_samples}")
 
     provider, snapshot = parse_model_id(judge_model_id)
     judge_model = _to_litellm_model(provider, snapshot)
@@ -251,30 +300,20 @@ async def grade(
         kwargs["vertex_location"] = _vertex_location_for(provider)
         if not os.environ.get("VERTEX_DISABLE_DEDICATED"):
             kwargs["extra_headers"] = {"X-Vertex-AI-LLM-Request-Type": "dedicated"}
-    sem = _judge_semaphore(judge_model_id)
-    async with sem:
-        try:
-            response = await litellm.acompletion(**kwargs)
-        except (litellm.BadRequestError, litellm.InternalServerError) as e:
-            msg = str(e).lower()
-            if "temperature" in msg and "deprecated" in msg:
-                kwargs.pop("temperature", None)
-                response = await litellm.acompletion(**kwargs)
-            else:
-                raise
-    content = response.choices[0].message.content or "{}"
-    parsed = json.loads(content)
-
-    # Capture judge-side accounting. LiteLLM stamps `_hidden_params["response_cost"]`
-    # with a USD estimate; usage carries token counts. We surface these on `GradedRun`
-    # so the paper's cost-per-question column can report inference + judge cost
-    # separately.
-    usage = getattr(response, "usage", None)
-    judge_prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-    judge_completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-    hidden = getattr(response, "_hidden_params", {}) or {}
-    judge_cost = hidden.get("response_cost")
-    judge_cost_usd = float(judge_cost) if judge_cost is not None else None
+    # Run the structured judge `compound_samples` times and reduce the independent
+    # verdicts by majority vote (`big_finance_harness.compound_judge`). With the
+    # default of one sample this collapses to a single call reduced to itself; with
+    # N>1 it scales judge-time compute for a more reliable verdict. The aggregated
+    # verdict has the same shape as a single judge response, so the translation below
+    # is unchanged; token and cost accounting is summed across the calls.
+    sample_results = await asyncio.gather(
+        *[_run_judge_once(kwargs, judge_model_id) for _ in range(compound_samples)]
+    )
+    parsed = aggregate_judge_samples([verdict for verdict, _, _, _ in sample_results])
+    judge_prompt_tokens = sum(prompt for _, prompt, _, _ in sample_results)
+    judge_completion_tokens = sum(comp for _, _, comp, _ in sample_results)
+    costs = [cost for _, _, _, cost in sample_results if cost is not None]
+    judge_cost_usd = sum(costs) if costs else None
 
     final_correct: bool = bool(parsed.get("final_answer_correct", False))
     by_index = {entry["index"]: entry for entry in parsed.get("rubric", [])}
