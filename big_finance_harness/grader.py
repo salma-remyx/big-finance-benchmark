@@ -21,12 +21,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
-
 import os
+from collections import defaultdict
+from typing import Any, Sequence
 
 import litellm
 
+from big_finance_harness.judge_agreement import (
+    AgreementResult,
+    alternative_annotator_test,
+)
 from big_finance_harness.models.base import (
     _to_litellm_model,
     _vertex_location_for,
@@ -316,3 +320,52 @@ async def grade(
         judge_completion_tokens=judge_completion_tokens,
         judge_cost_usd=judge_cost_usd,
     )
+
+
+def inter_judge_agreement(
+    graded_runs: Sequence[GradedRun],
+    *,
+    kappa_min: float = 0.8,
+    confidence: float = 0.95,
+    n_bootstrap: int = 2000,
+    seed: int = 0,
+) -> dict[str, AgreementResult]:
+    """Run the alternative-annotator test across every pair of judges.
+
+    Closes this module's inter-judge-agreement contract (see module docstring):
+    given the same runs graded by two or more non-evaluated judges, align each
+    judge's binary labels across questions -- one per rubric line plus one for
+    final-answer correctness -- and run the test for each unordered judge pair.
+    Returns one ``AgreementResult`` per pair, keyed ``"judgeA|judgeB"``.
+
+    Graders of the same run see the same rubric, so rubric lines align by
+    position. A question/trial graded by only one judge contributes no paired
+    labels and is skipped. See `judge_agreement` for the statistics.
+    """
+    per_judge: dict[str, dict[tuple[str, int], list[int]]] = defaultdict(lambda: defaultdict(list))
+    for gr in graded_runs:
+        key = (gr.question_id, gr.trial_idx)
+        per_judge[gr.judge][key] = [int(line.earned) for line in gr.rubric_lines] + [
+            int(gr.final_answer_correct)
+        ]
+
+    results: dict[str, AgreementResult] = {}
+    judges = sorted(per_judge)
+    for i, judge_a in enumerate(judges):
+        for judge_b in judges[i + 1 :]:
+            shared = sorted(set(per_judge[judge_a]) & set(per_judge[judge_b]))
+            if not shared:
+                continue
+            vec_a = [lbl for key in shared for lbl in per_judge[judge_a][key]]
+            vec_b = [lbl for key in shared for lbl in per_judge[judge_b][key]]
+            results[f"{judge_a}|{judge_b}"] = alternative_annotator_test(
+                vec_a,
+                vec_b,
+                reference_judge=judge_a,
+                alternative_judge=judge_b,
+                kappa_min=kappa_min,
+                confidence=confidence,
+                n_bootstrap=n_bootstrap,
+                seed=seed,
+            )
+    return results
