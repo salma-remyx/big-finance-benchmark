@@ -218,3 +218,34 @@ If you use this benchmark or harness, please cite the paper
 
 Apache 2.0. See [`LICENSE`](LICENSE). The bundled 50-item dataset subset under
 `data/` is licensed separately under CC BY 4.0; see [`data/LICENSE-DATA`](data/LICENSE-DATA).
+
+## Task evolution (deep-research item synthesis)
+
+`big_finance_harness/task_evolution.py` grows a simple Big Finance QA item into a
+deeper, multi-step research item via an Explorer → Formalizer → Challenger
+pipeline. The Explorer surfaces related filings and figures, the Formalizer
+composes a harder query and decomposes it into a DAG of atomic checkpoints, and
+the Challenger adds verification constraints and up-weights the synthesis steps.
+The DAG is reduced to the existing `RubricLine` schema (structure-weighted by
+checkpoint depth), so every evolved item is a plain `DatasetItem` that
+`scripts/run_eval_set.py` loads with **no schema change**.
+
+Generate an evolved subset, then evaluate it like any other dataset:
+
+```bash
+.venv/bin/python scripts/evolve_tasks.py \
+  --input data/big_finance_subset.jsonl \
+  --output data/big_finance_evolved.jsonl \
+  --model openai:gpt-5.5 --limit 5
+
+.venv/bin/python scripts/run_eval_set.py \
+  --dataset data/big_finance_evolved.jsonl --run-id evolved --kind dry_run \
+  --judge openai:gpt-5.5
+```
+
+Adapted from *From Simple QA to Deep Research: A Verifiable Benchmark Constructed
+through Iterative Task Evolution* (arXiv:2608.02163). The iterative LLM-driven
+evolution core is ported at full fidelity; the paper's own LLM backend is
+substituted with this harness's `ModelClient`, and its standalone benchmark suite
+and 31-topic taxonomy are intentionally out of scope (evaluation of evolved items
+belongs to the existing eval/grade pipeline).
