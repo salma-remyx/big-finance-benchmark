@@ -170,3 +170,8 @@ class GradedRun(BaseModel):
     judge_prompt_tokens: int = 0
     judge_completion_tokens: int = 0
     judge_cost_usd: float | None = None
+    # Optional behavioral audit of the run trace (A^2E multidimensional metrics).
+    # Populated only when the caller passes `audit=True` to `grader.grade`; stored as a
+    # plain dict rather than a typed model so `types` has no upward dependency on
+    # `agent_audit`. Re-validate with `RunAudit.model_validate` to get typed access.
+    audit: dict[str, Any] | None = None

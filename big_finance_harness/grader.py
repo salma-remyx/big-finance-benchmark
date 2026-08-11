@@ -27,6 +27,7 @@ import os
 
 import litellm
 
+from big_finance_harness.agent_audit import audit_run
 from big_finance_harness.models.base import (
     _to_litellm_model,
     _vertex_location_for,
@@ -190,12 +191,17 @@ async def grade(
     judge_model_id: str,
     max_output_tokens: int = 16384,
     judge_alias: str | None = None,
+    audit: bool = False,
 ) -> GradedRun:
     """Grade a run with the given judge.
 
     `judge_alias`: if provided, the stored `GradedRun.judge` field uses this string
     instead of `judge_model_id`. Useful when substituting a same-family model and
     wanting downstream analysis to treat the grades as a single judge bucket.
+
+    `audit`: if True, also compute A^2E-style behavioral metrics over the run trace and
+    attach them to the returned `GradedRun.audit`. The audit is deterministic and adds
+    no model call, so it is safe to enable on any grading pass.
     """
     if run.question_id != item.id:
         raise ValueError(f"run/item id mismatch: run={run.question_id} item={item.id}")
@@ -299,6 +305,8 @@ async def grade(
             points_earned += line.points
             lines_earned += 1
 
+    audit_payload = audit_run(run).model_dump() if audit else None
+
     return GradedRun(
         question_id=item.id,
         trial_idx=run.trial_idx,
@@ -315,4 +323,5 @@ async def grade(
         judge_prompt_tokens=judge_prompt_tokens,
         judge_completion_tokens=judge_completion_tokens,
         judge_cost_usd=judge_cost_usd,
+        audit=audit_payload,
     )
