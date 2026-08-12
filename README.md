@@ -218,3 +218,29 @@ If you use this benchmark or harness, please cite the paper
 
 Apache 2.0. See [`LICENSE`](LICENSE). The bundled 50-item dataset subset under
 `data/` is licensed separately under CC BY 4.0; see [`data/LICENSE-DATA`](data/LICENSE-DATA).
+
+## Cross-trial consistency
+
+Each `(question, model)` pair runs 3 trials (see Methodology), but the headline
+accuracy table reports a per-trial mean — it does not show how often the model
+gave a *different* final answer across those repeated runs. That multi-run
+consistency dimension is adapted from
+[What Current AI Benchmarks Leave Unmeasured](https://arxiv.org/abs/2608.06202),
+which finds repeated runs of the same prompt produce inconsistent responses in
+up to 21% of prompts — a behavioral variation that single-run accuracy obscures.
+
+`scripts/consistency_report.py` measures it on an existing run, grouping graded
+trials by `(question_id, model_label, judge)` and reporting the fraction of
+groups whose trials disagreed on the final-answer text (and on the judge's
+correctness verdict):
+
+```bash
+.venv/bin/python scripts/consistency_report.py \
+  --run-dir runs/headline \
+  --out-dir runs/headline/analysis
+```
+
+Outputs `consistency_by_question.csv` (per-group agreement flags and the
+normalized answers) and `consistency_summary.csv` (per-model plus overall
+inconsistency rate). The measurement itself lives in
+`big_finance_harness/trial_consistency.py`.
