@@ -218,3 +218,30 @@ If you use this benchmark or harness, please cite the paper
 
 Apache 2.0. See [`LICENSE`](LICENSE). The bundled 50-item dataset subset under
 `data/` is licensed separately under CC BY 4.0; see [`data/LICENSE-DATA`](data/LICENSE-DATA).
+
+## Evidence grounding (provenance scoring)
+
+`big_finance_harness/evidence_grounding.py` scores how well a finished run's
+retrieved evidence is *grounded* — whether the passages the agent surfaced (its
+`edgar_search` / `fetch_url` / web-search results) cover the intended gold
+evidence, and whether it confuses that evidence with known hard negatives (the
+same metric in a different period, a comparable firm, a neighbouring section).
+It wires together two pieces the harness already carried but never connected:
+`DatasetItem.sources` (gold supporting passages) and the retrieved
+`tool_results` on a run's trace.
+
+The metrics are an adapted port of the FinRank provenance measurements
+(arXiv:2608.07400): Recall@K of the gold passages, provenance precision against
+hard negatives, and hard-negative pairwise ranking accuracy. Passage matching
+uses a parameter-free token-overlap proxy in place of the paper's learned
+embedder. Because the public subset does not yet populate `sources`, gold
+passages and hard negatives are supplied via an optional sidecar JSONL of
+`{"id", "sources", "hard_negatives"}` records. Score an existing run's traces:
+
+```bash
+.venv/bin/python scripts/eval_evidence_grounding.py \
+  --traces runs/quickstart/<model_label>.traces.jsonl \
+  --dataset data/big_finance_subset.jsonl \
+  --provenance data/provenance.jsonl \
+  --k 10
+```
