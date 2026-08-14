@@ -24,6 +24,8 @@ from pathlib import Path
 
 import click
 
+from big_finance_harness.rubric_calibration import write_rubric_calibration_csv
+
 
 def _load_grades(run_dir: Path) -> list[dict]:
     """Load every `<label>.grades.*.jsonl` file in the run dir.
@@ -161,7 +163,17 @@ def _load_dataset(dataset_path: Path) -> dict[str, dict]:
     type=click.Path(path_type=Path),
     help="Where to write the analysis CSVs. Will be created if it doesn't exist.",
 )
-def main(run_dir: Path, dataset: Path, out_dir: Path) -> None:
+@click.option(
+    "--rubric-calibration",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also write rubric_calibration.csv: a Beta-Bernoulli measurability posterior "
+        "per (question, rubric line) plus greedy bank selection. See "
+        "big_finance_harness.rubric_calibration."
+    ),
+)
+def main(run_dir: Path, dataset: Path, out_dir: Path, rubric_calibration: bool) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     click.echo(f"loading grades from {run_dir} ...")
@@ -184,6 +196,13 @@ def main(run_dir: Path, dataset: Path, out_dir: Path) -> None:
     click.echo(f"loading dataset {dataset} ...")
     items = _load_dataset(dataset)
     click.echo(f"  {len(items):,} questions")
+
+    if rubric_calibration:
+        calibration_path = out_dir / "rubric_calibration.csv"
+        reports = write_rubric_calibration_csv(grades=grades, out_path=calibration_path)
+        n_measurable = sum(len(r.measurable_indices) for r in reports)
+        n_total = sum(len(r.lines) for r in reports)
+        click.echo(f"wrote {calibration_path}: {n_measurable}/{n_total} lines measurable")
 
     # Per-grade CSV.
     per_grade_path = out_dir / "per_grade.csv"

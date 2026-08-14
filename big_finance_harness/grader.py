@@ -190,15 +190,23 @@ async def grade(
     judge_model_id: str,
     max_output_tokens: int = 16384,
     judge_alias: str | None = None,
+    rubric_indices: list[int] | None = None,
 ) -> GradedRun:
     """Grade a run with the given judge.
 
     `judge_alias`: if provided, the stored `GradedRun.judge` field uses this string
     instead of `judge_model_id`. Useful when substituting a same-family model and
     wanting downstream analysis to treat the grades as a single judge bucket.
+
+    `rubric_indices`: if provided, grade only these 0-based rubric lines — a
+    measurability-filtered / bank-selected subset of the item's rubric (see
+    `big_finance_harness.rubric_calibration`). The judge is shown the filtered
+    rubric; points and line counts are aggregated over the subset only.
     """
     if run.question_id != item.id:
         raise ValueError(f"run/item id mismatch: run={run.question_id} item={item.id}")
+
+    rubric = item.rubric if rubric_indices is None else [item.rubric[i] for i in rubric_indices]
 
     provider, snapshot = parse_model_id(judge_model_id)
     judge_model = _to_litellm_model(provider, snapshot)
@@ -207,11 +215,11 @@ async def grade(
     user_prompt = _judge_user_prompt(
         question=item.query,
         reference_answer=item.reference_answer,
-        rubric=item.rubric,
+        rubric=rubric,
         final_answer=run.final_answer,
         trace=trace,
     )
-    schema = _build_response_schema(len(item.rubric))
+    schema = _build_response_schema(len(rubric))
 
     # LiteLLM normalizes structured output across providers via
     # response_format={type: json_schema}. With drop_params=True, providers that don't
@@ -283,7 +291,7 @@ async def grade(
     points_earned = 0
     points_possible = 0
     lines_earned = 0
-    for i, line in enumerate(item.rubric):
+    for i, line in enumerate(rubric):
         entry = by_index.get(i + 1, {"satisfied": False, "explanation": "missing"})
         satisfied = bool(entry.get("satisfied", False))
         graded.append(
@@ -311,7 +319,7 @@ async def grade(
         rubric_points_earned=points_earned,
         rubric_points_possible=points_possible,
         rubric_lines_earned=lines_earned,
-        rubric_lines_possible=len(item.rubric),
+        rubric_lines_possible=len(rubric),
         judge_prompt_tokens=judge_prompt_tokens,
         judge_completion_tokens=judge_completion_tokens,
         judge_cost_usd=judge_cost_usd,

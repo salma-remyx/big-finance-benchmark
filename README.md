@@ -160,6 +160,29 @@ The paper's Table 1 was produced by:
   --out-dir runs/headline/analysis/plots
 ```
 
+## Rubric calibration
+
+Which rubric lines can the judge panel actually measure? `--rubric-calibration`
+(step 3 above) adds `rubric_calibration.csv` to the analysis output: one row per
+(question, rubric line) with a Beta-Bernoulli posterior over inter-judge
+agreement, a `measurable` flag, and an `in_bank` flag from greedy
+information-coverage bank selection (a compact rubric subset that spans the
+observed ability range). Adapted from
+[CalibratedRubric](https://arxiv.org/abs/2607.29252).
+
+```bash
+.venv/bin/python scripts/build_analysis_csv.py \
+  --run-dir runs/headline \
+  --dataset data/big_finance_full.jsonl \
+  --out-dir runs/headline/analysis \
+  --rubric-calibration
+```
+
+The posterior needs **≥3 judges** to be decisive; with the default two-judge
+panel no line is filtered and the CSV reports `sufficient_judges=False`. The
+`measurable_indices` from `big_finance_harness.rubric_calibration` can be
+passed to `grade(..., rubric_indices=...)` to grade on a filtered bank.
+
 ## Methodology
 
 - **Sampling**: temperature=0, no system prompt beyond a short scaffold instruction.
